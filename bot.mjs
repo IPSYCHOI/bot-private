@@ -163,7 +163,7 @@ app.listen(port, () => {
   } else {
     // In production, log the URL so users can open it manually
     console.log(`Please open the following URL in your browser:`);
-    console.log(`http://bot-production-7bb6.up.railway.app:${port}/auth/google`);
+    console.log(`https://bot-production-7bb6.up.railway.app:${port}/auth/google`);
   }
 });
 
