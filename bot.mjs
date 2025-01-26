@@ -255,6 +255,7 @@ async function authenticateGoogle() {
   return oAuth2Client;
 }
 
+
 // Express server handling Google OAuth redirect
 app.get('/auth/google', async (req, res) => {
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
@@ -263,6 +264,7 @@ app.get('/auth/google', async (req, res) => {
 
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: 'offline',
+    prompt: 'consent',
     scope: SCOPES,
   });
 
@@ -278,14 +280,20 @@ app.get('/auth/google/callback', async (req, res) => {
   try {
     const { tokens } = await oAuth2Client.getToken(code);
     oAuth2Client.setCredentials(tokens);
+    
 
     // Store the token for later use
     fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
     res.send('Authentication successful! You can now close this page.');
+    
   } catch (error) {
     console.error('Error during authentication', error);
     res.send('Authentication failed!');
   }
+  const REFRESH_TOKEN = process.env.REFRESH_TOKEN;
+
+  
+  oAuth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 });
 
 // Start the Express server
