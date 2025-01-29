@@ -633,7 +633,41 @@ client.on('messageCreate', async (message) => {
     }
   }
 
+  if (message.content.startsWith('!organize')) {
+    // Check if the message author is the allowed user
+    if (message.author.id !== allowedUserId) {
+        return message.reply("You don't have permission to use this command.");
+    }
 
+    // Extract the subfolder name from the command
+    const subfolderName = message.content.split(' ')[1]; // e.g., "!organize task1" => "task1"
+    if (!subfolderName) {
+        return message.reply('Please specify a subfolder name. Usage: `!organize <subfolder-name>`');
+    }
+
+    try {
+        const auth = await authenticateGoogle();
+        const tasksFolderId = await getTasksFolderId(auth);
+        const memberFolders = await listMemberFolders(auth, tasksFolderId);
+
+        for (const memberFolder of memberFolders) {
+            // Create a new subfolder with the specified name
+            const subfolderId = await createSubfolder(auth, memberFolder.id, subfolderName);
+            
+            // List all files in the student's folder
+            const files = await listFilesInFolder(auth, memberFolder.id);
+            const fileIds = files.map(file => file.id);
+            
+            // Move all files into the new subfolder
+            await moveFilesToSubfolder(auth, fileIds, subfolderId);
+        }
+
+        message.reply(`Files have been organized into new subfolders named "${subfolderName}".`);
+    } catch (error) {
+        console.error('Error organizing files:', error);
+        message.reply('Failed to organize files. Please check the logs for details.');
+    }
+}
 
   
 });
