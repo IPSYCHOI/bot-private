@@ -1,138 +1,4 @@
-// import dotenv from 'dotenv';
-// import { Client, GatewayIntentBits } from 'discord.js';
-// import { google } from 'googleapis';
-// import express from 'express';
-// import fs from 'fs';
-// import path from 'path';
-// import { fileURLToPath } from 'url';
-// import open from 'open';
 
-// // Configure dotenv to load environment variables
-// dotenv.config();
-
-// // Paths setup
-// const __filename = fileURLToPath(import.meta.url);
-// const __dirname = path.dirname(__filename);
-
-// // Discord Bot setup
-// const client = new Client({
-//   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-// });
-
-// const SCOPES = [
-//   'https://www.googleapis.com/auth/drive.metadata.readonly',
-//   'https://www.googleapis.com/auth/drive.file', // Required for file uploads
-//   'https://www.googleapis.com/auth/drive', // Optional: broader access to drive
-// ];
-
-// const TOKEN_PATH = path.join(__dirname, 'token.json'); // Path to store access token
-// const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json'); // Path to your credentials file
-
-// // Initialize the Express server
-// const app = express();
-// const port = 3000;
-
-// // Function to authenticate with Google OAuth
-// async function authenticateGoogle() {
-//   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
-//   const { client_secret, client_id, redirect_uris } = credentials.web;
-//   const oAuth2Client = new google.auth.OAuth2(
-//     client_id,
-//     client_secret,
-//     process.env.NODE_ENV === 'production'
-//       ? 'https://bot-production-7bb6.up.railway.app/auth/google/callback' // Production redirect URI
-//       : redirect_uris[0] // Development redirect URI
-//   );
-
-//   // Use environment variable for refresh token in production
-//   if (process.env.NODE_ENV === 'production') {
-//     if (!process.env.REFRESH_TOKEN) {
-//       throw new Error('No REFRESH_TOKEN set in environment variables.');
-//     }
-//     oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
-//   } else if (fs.existsSync(TOKEN_PATH)) {
-//     const token = JSON.parse(fs.readFileSync(TOKEN_PATH));
-//     oAuth2Client.setCredentials(token);
-//   } else {
-//     console.log('Token not found. Please authenticate using /auth/google.');
-//     return oAuth2Client;
-//   }
-
-//   return oAuth2Client;
-// }
-
-// // Function to upload files to Google Drive
-// async function uploadFileToGoogleDrive(filePath, fileName, folderId) {
-//   const auth = await authenticateGoogle();
-//   const drive = google.drive({ version: 'v3', auth });
-
-//   const fileMetadata = {
-//     name: fileName,
-//     parents: [folderId], // Upload to the selected member folder
-//   };
-//   const media = {
-//     mimeType: 'application/octet-stream',
-//     body: fs.createReadStream(filePath),
-//   };
-
-//   await drive.files.create({
-//     resource: fileMetadata,
-//     media: media,
-//     fields: 'id',
-//   });
-//   console.log('File uploaded to Google Drive');
-// }
-
-// // Google OAuth authentication flow
-// app.get('/auth/google', async (req, res) => {
-//   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
-//   const { client_secret, client_id, redirect_uris } = credentials.web;
-//   const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-
-//   const authUrl = oAuth2Client.generateAuthUrl({
-//     access_type: 'offline',
-//     scope: SCOPES,
-//   });
-
-//   res.redirect(authUrl);
-// });
-
-// app.get('/auth/google/callback', async (req, res) => {
-//   const { code } = req.query;
-//   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
-//   const { client_secret, client_id, redirect_uris } = credentials.web;
-//   const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-
-//   try {
-//     const { tokens } = await oAuth2Client.getToken(code);
-//     oAuth2Client.setCredentials(tokens);
-
-//     // Store the refresh token in environment variable for production
-//     if (process.env.NODE_ENV === 'production') {
-//       console.log('Refresh Token:', tokens.refresh_token); // Print it to set in environment variables
-//     } else {
-//       fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
-//     }
-
-//     res.send('Authentication successful! You can now close this page.');
-//   } catch (error) {
-//     console.error('Error during authentication', error);
-//     res.send('Authentication failed!');
-//   }
-// });
-
-// // Start the Express server
-// app.listen(port, () => {
-//   console.log(`Server started at http://localhost:${port}`);
-  
-//   // Open the URL in development
-//   if (process.env.NODE_ENV !== 'production') {
-//     open(`http://localhost:${port}/auth/google`);
-//   } else {
-//     console.log(`Please open the following URL in your browser:`);
-//     console.log(`https://bot-production-7bb6.up.railway.app/auth/google`);
-//   }
-// });
 
 import dotenv from 'dotenv';
 import { Client, GatewayIntentBits } from 'discord.js';
@@ -207,7 +73,38 @@ async function getTaskFolderId(auth) {
     throw new Error('Task folder not found in Google Drive.');
   }
 }
-
+async function createSubfolder(auth, parentFolderId, folderName) {
+  const drive = google.drive({ version: 'v3', auth });
+  const fileMetadata = {
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentFolderId],
+  };
+  const res = await drive.files.create({
+      resource: fileMetadata,
+      fields: 'id',
+  });
+  return res.data.id;  // Return the ID of the new subfolder
+}
+async function moveFilesToSubfolder(auth, fileIds, destinationFolderId) {
+  const drive = google.drive({ version: 'v3', auth });
+  for (const fileId of fileIds) {
+      await drive.files.update({
+          fileId: fileId,
+          addParents: destinationFolderId,
+          removeParents: (await drive.files.get({ fileId: fileId, fields: 'parents' })).data.parents.join(','),
+          fields: 'id, parents',
+      });
+  }
+}
+async function listFilesInFolder(auth, folderId) {
+  const drive = google.drive({ version: 'v3', auth });
+  const res = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType != 'application/vnd.google-apps.folder'`,
+      fields: 'files(id, name)',
+  });
+  return res.data.files;
+}
 // Function to list member folders inside 'Tasks'
 async function listMemberFolders(auth, tasksFolderId) {
   const drive = google.drive({ version: 'v3', auth });
