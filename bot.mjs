@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import open from 'open';
 import fetch from 'node-fetch'; // Ensure you have 'node-fetch' installed for fetching files
 import axios from 'axios';
+import  {pipeline}  from 'stream/promises'; // Required for handling file streams
 
 // Configure dotenv to load environment variables
 dotenv.config();
@@ -135,6 +136,22 @@ async function uploadFileToGoogleDrive(filePath, fileName, folderId) {
     fields: 'id',
   });
   console.log('File uploaded to Google Drive');
+}
+async function listSubfoldersInFolder(auth, folderId) {
+  const drive = google.drive({ version: 'v3', auth });
+
+  try {
+      // List all subfolders in the folder
+      const res = await drive.files.list({
+          q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder'`,
+          fields: 'files(id, name)', // Get file ID and name
+      });
+
+      return res.data.files || [];
+  } catch (error) {
+      console.error('Error fetching subfolders:', error);
+      return [];
+  }
 }
 
 // Google OAuth 2.0 authentication
@@ -334,82 +351,94 @@ client.on('messageCreate', async (message) => {
   //-----------------------------------------------------------------------------------
 
      const notificationChannelId = "1316503136936001628"
-    if (message.content.startsWith('!submit')) {
+
+
+if (message.content.startsWith('!submit')) {
     const files = Array.from(message.attachments.values()); // Convert the collection to an array
-    if (files.length > 0) {
+
+    if (files.length === 0) {
+        return message.reply('Please attach at least one file with your task.');
+    }
+
+    try {
         const auth = await authenticateGoogle(); // Authenticate with Google API
         const tasksFolderId = await getTasksFolderId(auth); // Get 'Tasks' folder ID
         const memberFolders = await listMemberFolders(auth, tasksFolderId); // Get member folders
 
-        if (memberFolders.length > 0) {
-            let folderList = 'Please select your folder by replying with the number corresponding to your name:\n';
-            memberFolders.forEach((folder, index) => {
-                folderList += `${index + 1}. ${folder.name} \n`;
-            });
-
-            const selectionMessage = await message.reply(folderList);
-
-            // Wait for the user's reply with their folder number
-            const filter = (response) => response.author.id === message.author.id;
-            const collected = await message.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
-
-            // Delete the folder selection message
-            await selectionMessage.delete();
-
-            // Delete the user's folder selection message
-            await collected.first().delete();
-
-            const selectedNumber = parseInt(collected.first().content.trim(), 10);
-            const selectedFolder = memberFolders[selectedNumber - 1];
-
-            if (selectedFolder) {
-                // Loop through each file and upload to Google Drive
-                for (const file of files) {
-                    const filePath = path.join(__dirname, file.name);
-                    const fileStream = fs.createWriteStream(filePath);
-
-                    try {
-                        const response = await fetch(file.url);
-                        if (!response.ok) {
-                            throw new Error('Failed to fetch the file');
-                        }
-
-                        response.body.pipe(fileStream);
-
-                        fileStream.on('finish', async () => {
-                            try {
-                                await uploadFileToGoogleDrive(filePath, file.name, selectedFolder.id);
-                                const memberName = message.author.username;
-                                const timestamp = new Date().toLocaleString();
-                                const channel = await message.guild.channels.fetch(notificationChannelId);
-                                channel.send(`${memberName} submitted a file at ${timestamp}`);
-                                // Send success message to the user
-                                await message.author.send(`Your task file "${file.name}" has been submitted successfully, <@${message.author.id}>!`);
-                            } catch (error) {
-                                console.error('Error uploading file to Google Drive:', error);
-                                message.reply('Failed to submit your task. Please try again.');
-                            }
-                            fs.unlinkSync(filePath); // Remove the file after upload
-                        });
-                    } catch (error) {
-                        console.error('Error downloading the file:', error);
-                        message.reply('Failed to download the file. Please try again.');
-                    }
-                }
-            } else {
-                message.reply('Folder not found. Please check your folder number.');
-            }
-        } else {
-            message.reply('No member folders found in the "Tasks" folder.');
+        if (memberFolders.length === 0) {
+            return message.reply('No member folders found in the "Tasks" folder.');
         }
-    } else {
-        message.reply('Please attach at least one file with your task.');
+
+        let folderList = 'Please select your folder by replying with the number corresponding to your name:\n';
+        memberFolders.forEach((folder, index) => {
+            folderList += `${index + 1}. ${folder.name} \n`;
+        });
+
+        const selectionMessage = await message.reply(folderList);
+
+        // Wait for the user's reply with their folder number
+        const filter = (response) => response.author.id === message.author.id;
+        const collected = await message.channel.awaitMessages({ filter, max: 1, time: 60000 });
+
+        const userResponse = collected.first();
+        const selectedNumber = parseInt(userResponse.content.trim(), 10);
+
+        // Validate user input
+        if (isNaN(selectedNumber) || selectedNumber < 1 || selectedNumber > memberFolders.length) {
+            await message.reply('Invalid selection. Please provide a valid number next time.');
+            return;
+        }
+
+        const selectedFolder = memberFolders[selectedNumber - 1];
+
+        await selectionMessage.delete(); // Delete selection prompt
+        await userResponse.delete(); // Delete user's response
+
+        // Process each file
+        for (const file of files) {
+            const filePath = path.join(__dirname, file.name);
+            const fileStream = fs.createWriteStream(filePath);
+
+            try {
+                const response = await fetch(file.url);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch the file');
+                }
+
+                await pipeline(response.body, fileStream); // Wait for file download to complete
+
+                // Upload file to Google Drive
+                await uploadFileToGoogleDrive(filePath, file.name, selectedFolder.id);
+
+                const memberName = message.author.username;
+                const timestamp = new Date().toLocaleString();
+                const channel = message.client.channels.cache.get(notificationChannelId);
+                if (!channel) {
+                    console.error("Channel not found. Check if the ID is correct.");
+                    return;
+                }
+                
+                await channel.send(`${memberName} submitted a file at ${timestamp}`);
+
+                // Notify user via DM
+                await message.author.send(`Your task file "${file.name}" has been submitted successfully, <@${message.author.id}>!`);
+
+                fs.unlinkSync(filePath); // Remove file after upload
+            } catch (error) {
+                console.error('Error processing file:', error);
+                await message.reply(`Failed to process file "${file.name}". Please try again.`);
+            }
+        }
+    } catch (error) {
+        console.error('Error handling task submission:', error);
+        await message.reply('An error occurred while processing your submission. Please try again.');
     }
 
     // Delete the original command message
     await message.delete();
 }
-  
+
+
   if (message.content === '!delete_all' && message.author.dmChannel) {
     try {
       const dmChannel = message.author.dmChannel;
@@ -530,43 +559,110 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  if (message.content.startsWith('!organize')) {
-    // Check if the message author is the allowed user
-    if (message.author.id !== allowedUserId) {
-        return message.reply("You don't have permission to use this command.");
-    }
 
-    // Extract the subfolder name from the command
-    const subfolderName = message.content.split(' ')[1]; // e.g., "!organize task1" => "task1"
-    if (!subfolderName) {
-        return message.reply('Please specify a subfolder name. Usage: `!organize <subfolder-name>`');
-    }
+if (message.content.startsWith('!organize')) {
+  // Check if the message author is the allowed user
+  if (message.author.id !== allowedUserId) {
+      return message.reply("You don't have permission to use this command.");
+  }
 
-    try {
-        const auth = await authenticateGoogle();
-        const tasksFolderId = await getTasksFolderId(auth);
-        const memberFolders = await listMemberFolders(auth, tasksFolderId);
+  // Extract the subfolder name from the command
+  const subfolderName = message.content.split(' ')[1]; // e.g., "!organize task1" => "task1"
+  if (!subfolderName) {
+      return message.reply('Please specify a subfolder name. Usage: `!organize <subfolder-name>`');
+  }
 
-        for (const memberFolder of memberFolders) {
-            // Create a new subfolder with the specified name
-            const subfolderId = await createSubfolder(auth, memberFolder.id, subfolderName);
-            
-            // List all files in the student's folder
-            const files = await listFilesInFolder(auth, memberFolder.id);
-            const fileIds = files.map(file => file.id);
-            
-            // Move all files into the new subfolder
-            await moveFilesToSubfolder(auth, fileIds, subfolderId);
-        }
+  try {
+      const auth = await authenticateGoogle();
+      const tasksFolderId = await getTasksFolderId(auth);
+      const memberFolders = await listMemberFolders(auth, tasksFolderId);
 
-        message.reply(`Files have been organized into new subfolders named "${subfolderName}".`);
-    } catch (error) {
-        console.error('Error organizing files:', error);
-        message.reply('Failed to organize files. Please check the logs for details.');
-    }
+      let foldersCreated = 0; // Track how many folders were created
+
+      for (const memberFolder of memberFolders) {
+          // List all files in the student's folder
+          const files = await listFilesInFolder(auth, memberFolder.id);
+          if (files.length === 0) {
+              console.log(`Skipping folder "${memberFolder.name}" as it contains no files.`);
+              continue; // Skip if no files exist
+          }
+
+          // Create a new subfolder with the specified name
+          const subfolderId = await createSubfolder(auth, memberFolder.id, subfolderName);
+          const fileIds = files.map(file => file.id);
+          
+          // Move all files into the new subfolder
+          await moveFilesToSubfolder(auth, fileIds, subfolderId);
+          foldersCreated++;
+      }
+
+      if (foldersCreated > 0) {
+          message.reply(`Files have been organized into new subfolders named "${subfolderName}".`);
+      } else {
+          message.reply('No files found in any folder. No subfolders were created.');
+      }
+  } catch (error) {
+      console.error('Error organizing files:', error);
+      message.reply('Failed to organize files. Please check the logs for details.');
+  }
 }
 
-  
+if (message.content.startsWith('!count')) {
+  const args = message.content.split(' ');
+  if (args.length < 2 || isNaN(args[1])) {
+      return message.reply('Please provide a valid task number. Usage: `!count <taskNumber>`');
+  }
+
+  const taskNumber = args[1]; // Extract task number (e.g., "2")
+  const auth = await authenticateGoogle(); // Authenticate with Google API
+  const tasksFolderId = await getTasksFolderId(auth); // Get 'Tasks' folder ID
+  const memberFolders = await listMemberFolders(auth, tasksFolderId); // Get all member folders
+
+  let taskUploads = {};
+  let taskIndex = 0;
+  let foundFolders = true;
+
+  while (foundFolders) {
+      foundFolders = false;
+      const taskLabel = `task${taskNumber}.${taskIndex}`; // e.g., task2.0, task2.1, etc.
+      taskUploads[taskLabel] = [];
+
+      for (const memberFolder of memberFolders) {
+          // List subfolders for each member's folder
+          const subfolders = await listSubfoldersInFolder(auth, memberFolder.id);
+
+          if (subfolders.some(subfolder => subfolder.name === taskLabel)) {
+              foundFolders = true;
+              taskUploads[taskLabel].push(memberFolder.name); // Add member name who uploaded this task
+          }
+      }
+
+      if (!foundFolders) {
+          delete taskUploads[taskLabel]; // Remove task entry if no member submitted it
+      } else {
+          taskIndex++; // Move to the next task version (task2.1, task2.2, etc.)
+      }
+  }
+
+  if (Object.keys(taskUploads).length === 0) {
+      return message.reply(`No submissions found for task ${taskNumber}.`);
+  }
+
+  let report = `📊 **Task ${taskNumber} Submission Report** 📊\n\n`;
+  for (const [task, members] of Object.entries(taskUploads)) {
+      report += `📌 **${task}**:\n${members.map(m => `- ${m}`).join('\n')}\n\n`;
+  }
+
+  try {
+      await message.author.send(report); // Send the report to the user who issued the command
+      message.reply(`Report sent to you via DM.`);
+  } catch (error) {
+      console.error('Error sending DM:', error);
+      message.reply('Failed to send report. Please check your DM settings.');
+  }
+}
+
+
 });
 
 
