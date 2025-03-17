@@ -348,6 +348,96 @@ client.on('messageCreate', async (message) => {
       message.reply('An error occurred while processing your request.');
     }
   }
+  const taskChannelId = "1315780720496738465"; // Replace with your actual channel ID
+
+if (message.content === '!addtask') {
+    if (!message.attachments.size) {
+        return message.reply('Please attach a file to upload as the new task.');
+    }
+
+    try {
+        const auth = await authenticateGoogle();
+        const drive = google.drive({ version: 'v3', auth });
+        const tasksFolderId = await getTaskFolderId(auth);
+
+        // List all files in the "Tasks" folder
+        const res = await drive.files.list({
+            q: `'${tasksFolderId}' in parents`,
+            fields: 'files(id, name)',
+        });
+
+        const files = res.data.files;
+
+        // Delete all existing files in the folder
+        for (const file of files) {
+            await drive.files.delete({ fileId: file.id });
+        }
+
+        // Permanently remove from trash
+        const trashRes = await drive.files.list({
+            q: `'${tasksFolderId}' in parents and trashed=true`,
+            fields: 'files(id, name)',
+        });
+
+        for (const file of trashRes.data.files) {
+            await drive.files.delete({ fileId: file.id });
+        }
+
+        // Download the attached file
+        const attachment = message.attachments.first();
+        const filePath = path.join(__dirname, attachment.name);
+        const dest = fs.createWriteStream(filePath);
+
+        const response = await fetch(attachment.url);
+        response.body.pipe(dest);
+
+        dest.on('finish', async () => {
+            try {
+                // Upload the new task file to Google Drive
+                const fileMetadata = {
+                    name: attachment.name,
+                    parents: [tasksFolderId],
+                };
+                const media = {
+                    mimeType: attachment.contentType,
+                    body: fs.createReadStream(filePath),
+                };
+
+                const uploadResponse = await drive.files.create({
+                    resource: fileMetadata,
+                    media: media,
+                    fields: 'id, name',
+                });
+
+                message.reply(`New task file **${uploadResponse.data.name}** uploaded successfully!`);
+
+                // Get the channel and send the notification
+                const taskChannel = message.client.channels.cache.get(taskChannelId);
+                if (taskChannel) {
+                    await taskChannel.send('@everyone New task has been added!');
+                } else {
+                    console.error('Task channel not found.');
+                }
+
+            } catch (uploadError) {
+                console.error('Error uploading file:', uploadError);
+                message.reply('Failed to upload the task. Please try again.');
+            } finally {
+                fs.unlinkSync(filePath); // Clean up the local file
+            }
+        });
+
+        dest.on('error', (error) => {
+            console.error('Error writing file:', error);
+            message.reply('Failed to save the task locally.');
+        });
+
+    } catch (error) {
+        console.error('Error handling !addtask command:', error);
+        message.reply('An error occurred while processing your request.');
+    }
+}
+
   //-----------------------------------------------------------------------------------
 
      const notificationChannelId = "1316503136936001628"
