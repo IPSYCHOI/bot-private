@@ -234,26 +234,32 @@ client.on('messageCreate', async (message) => {
   // Define the channel ID where the "!all" command is allowed
   // Replace 'YOUR_CHANNEL_ID' with the ID of the specific channel
   
-  if (message.content === '!all') {
+  if (message.content.startsWith('!all ')) {
     // Check if the message author is the allowed user
     if (message.author.id !== allowedUserId) {
       return message.reply("You don't have permission to use this command.");
     }
-    
-    
-    
+  
+    // Extract the custom message (remove "!all " from the beginning)
+    const customMessage = message.content.slice(5).trim();
+  
+    // Ensure a message was provided
+    if (!customMessage) {
+      return message.reply("Please provide a message to send.");
+    }
+  
     try {
-      
-      // Send the message in the channel where the command was used
-       await message.channel.send('@everyone New task has been added!');
-      
-      
-      
+      // Delete the command message
+      await message.delete();
+  
+      // Send the message with @everyone mention
+      await message.channel.send(`@everyone ${customMessage}`);
     } catch (error) {
       console.error('Error sending notification:', error);
       message.reply('Failed to send the notification. Please try again.');
     }
   }
+  
   
   //-----------------------------------------------------------------------------------
 
